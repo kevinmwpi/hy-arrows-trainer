@@ -209,10 +209,11 @@ const LESSONS = [
 ];
 
 function normalizeStats(raw) {
-  const base = { attempts: 0, correct: 0, streak: 0, bestStreak: 0, byId: {} };
+  const base = { attempts: 0, correct: 0, streak: 0, bestStreak: 0, byId: {}, byVariable: {} };
   if (!raw) return base;
   try {
-    return { ...base, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    return { ...base, ...parsed, byId: parsed.byId || {}, byVariable: parsed.byVariable || {} };
   } catch {
     return base;
   }
@@ -252,6 +253,14 @@ function validateQuestionBank(value) {
 
 function arrowLabel(value) {
   return ARROWS.find((a) => a.key === value)?.label ?? "?";
+}
+
+function getQuestionId(question) {
+  return String(question.id);
+}
+
+function getVariableKey(question, variableName) {
+  return `${question.module}::${variableName}`;
 }
 
 function StatCard({ label, value, sub }) {
@@ -310,30 +319,45 @@ export default function App() {
 
     if (mode === "weak") {
       pool = pool.filter((q) => {
-        const item = stats.byId[q.id];
-        return item && item.wrong > 0 && item.wrong >= item.correct;
+        const item = stats.byId[getQuestionId(q)];
+        const cardWeak = item && item.wrong > 0 && item.wrong >= item.correct;
+        const variableWeak = q.variables.some(([name]) => {
+          const variable = item?.variables?.[name];
+          return variable && variable.wrong > 0 && variable.wrong >= variable.correct;
+        });
+        return cardWeak || variableWeak;
       });
     }
 
     if (mode === "unseen") {
-      pool = pool.filter((q) => !stats.byId[q.id]?.attempts);
+      pool = pool.filter((q) => !stats.byId[getQuestionId(q)]?.attempts);
     }
 
-    return pool.length ? questions : pool;
+    return pool.length ? pool : questions;
   }, [module, difficulty, mode, query, stats.byId, questions]);
 
   const safeFiltered = filtered.length ? filtered : questions;
   const current = safeFiltered[index % safeFiltered.length];
+  const currentId = getQuestionId(current);
   const allAnswered = current.variables.every(([name]) => answers[name]);
   const accuracy = stats.attempts ? Math.round((stats.correct / stats.attempts) * 100) : 0;
+
+  const variableStats = Object.values(stats.byVariable || {})
+    .map((item) => ({ ...item, accuracy: item.attempts ? Math.round((item.correct / item.attempts) * 100) : 0 }))
+    .sort((a, b) => b.wrong - a.wrong || a.accuracy - b.accuracy || b.attempts - a.attempts);
+
+  const currentVariableHistory = current.variables.map(([name]) => {
+    const item = stats.byId[currentId]?.variables?.[name];
+    return { name, attempts: item?.attempts || 0, correct: item?.correct || 0, wrong: item?.wrong || 0 };
+  });
 
   const moduleStats = useMemo(() => {
     return modules
       .filter((m) => m !== "All")
       .map((m) => {
         const qs = questions.filter((q) => q.module === m);
-        const attempts = qs.reduce((sum, q) => sum + (stats.byId[q.id]?.attempts || 0), 0);
-        const correct = qs.reduce((sum, q) => sum + (stats.byId[q.id]?.correct || 0), 0);
+        const attempts = qs.reduce((sum, q) => sum + (stats.byId[getQuestionId(q)]?.attempts || 0), 0);
+        const correct = qs.reduce((sum, q) => sum + (stats.byId[getQuestionId(q)]?.correct || 0), 0);
         return { module: m, attempts, correct, pct: attempts ? Math.round((correct / attempts) * 100) : 0, total: qs.length };
       })
       .sort((a, b) => a.pct - b.pct || b.attempts - a.attempts);
@@ -348,10 +372,47 @@ export default function App() {
 
   function checkAnswer() {
     if (!allAnswered || checked) return;
-    const isCorrect = current.variables.every(([name, correct]) => answers[name] === correct);
+
+    const variableResults = current.variables.map(([name, correct]) => ({
+      name,
+      correct,
+      selected: answers[name],
+      isCorrect: answers[name] === correct,
+    }));
+    const isCorrect = variableResults.every((item) => item.isCorrect);
     setChecked(true);
+
     setStats((prev) => {
-      const prior = prev.byId[current.id] || { attempts: 0, correct: 0, wrong: 0 };
+      const prior = prev.byId[currentId] || { attempts: 0, correct: 0, wrong: 0, variables: {} };
+      const nextVariablesForCard = { ...(prior.variables || {}) };
+      const nextByVariable = { ...(prev.byVariable || {}) };
+
+      for (const result of variableResults) {
+        const existingCardVariable = nextVariablesForCard[result.name] || { attempts: 0, correct: 0, wrong: 0 };
+        nextVariablesForCard[result.name] = {
+          attempts: existingCardVariable.attempts + 1,
+          correct: existingCardVariable.correct + (result.isCorrect ? 1 : 0),
+          wrong: existingCardVariable.wrong + (result.isCorrect ? 0 : 1),
+          last: result.isCorrect ? "correct" : "wrong",
+        };
+
+        const variableKey = getVariableKey(current, result.name);
+        const existingGlobalVariable = nextByVariable[variableKey] || {
+          module: current.module,
+          name: result.name,
+          attempts: 0,
+          correct: 0,
+          wrong: 0,
+        };
+        nextByVariable[variableKey] = {
+          ...existingGlobalVariable,
+          attempts: existingGlobalVariable.attempts + 1,
+          correct: existingGlobalVariable.correct + (result.isCorrect ? 1 : 0),
+          wrong: existingGlobalVariable.wrong + (result.isCorrect ? 0 : 1),
+          lastQuestion: current.diagnosis,
+        };
+      }
+
       const streak = isCorrect ? prev.streak + 1 : 0;
       return {
         ...prev,
@@ -359,12 +420,16 @@ export default function App() {
         correct: prev.correct + (isCorrect ? 1 : 0),
         streak,
         bestStreak: Math.max(prev.bestStreak || 0, streak),
+        byVariable: nextByVariable,
         byId: {
           ...prev.byId,
-          [current.id]: {
+          [currentId]: {
+            ...prior,
             attempts: prior.attempts + 1,
             correct: prior.correct + (isCorrect ? 1 : 0),
             wrong: prior.wrong + (isCorrect ? 0 : 1),
+            variables: nextVariablesForCard,
+            last: isCorrect ? "correct" : "wrong",
           },
         },
       };
@@ -372,7 +437,7 @@ export default function App() {
   }
 
   function resetStats() {
-    setStats({ attempts: 0, correct: 0, streak: 0, bestStreak: 0, byId: {} });
+    setStats(normalizeStats(null));
     resetQuestion(0);
   }
 
@@ -427,7 +492,7 @@ export default function App() {
       <section className="filters">
         <label>Module<select value={module} onChange={(e) => { setModule(e.target.value); resetQuestion(0); }}>{modules.map((m) => <option key={m}>{m}</option>)}</select></label>
         <label>Difficulty<select value={difficulty} onChange={(e) => { setDifficulty(e.target.value); resetQuestion(0); }}>{difficulties.map((d) => <option key={d}>{d}</option>)}</select></label>
-        <label>Mode<select value={mode} onChange={(e) => { setMode(e.target.value); resetQuestion(0); }}><option value="all">All matching</option><option value="weak">Weak areas</option><option value="unseen">Unseen</option></select></label>
+        <label>Mode<select value={mode} onChange={(e) => { setMode(e.target.value); resetQuestion(0); }}><option value="all">All matching</option><option value="weak">Weak cards or variables</option><option value="unseen">Unseen</option></select></label>
         <label>Search<input value={query} onChange={(e) => { setQuery(e.target.value); resetQuestion(0); }} placeholder="ADH, Cushing, uptake..." /></label>
       </section>
 
@@ -457,7 +522,12 @@ export default function App() {
             <div className="actions"><button className="primary" disabled={!allAnswered || checked} onClick={checkAnswer}>Check answer</button><button onClick={() => resetQuestion(index + 1)}>Next</button><button onClick={() => resetQuestion(index - 1)}>Previous</button></div>
             {checked && <div className="explanation"><div><strong>Rule:</strong> {current.rule}</div><div><strong>Mechanism:</strong> {current.why}</div><div><strong>Trap:</strong> {current.trap}</div></div>}
           </section>
-          <aside className="side"><StatCard label="Attempts" value={stats.attempts || 0} sub={`${stats.correct || 0} correct`} /><StatCard label="Best streak" value={stats.bestStreak || 0} /><div className="card small"><h3>Hidden answer key</h3>{current.variables.map(([name, answer]) => <div key={name} className="key-row"><span>{name}</span><strong>{checked ? arrowLabel(answer) : "hidden"}</strong></div>)}</div></aside>
+          <aside className="side">
+            <StatCard label="Attempts" value={stats.attempts || 0} sub={`${stats.correct || 0} fully correct`} />
+            <StatCard label="Best streak" value={stats.bestStreak || 0} />
+            <div className="card small"><h3>Variable history for this card</h3>{currentVariableHistory.map((item) => <div key={item.name} className="key-row"><span>{item.name}</span><strong>{item.correct}/{item.attempts} · {item.wrong} wrong</strong></div>)}</div>
+            <div className="card small"><h3>Hidden answer key</h3>{current.variables.map(([name, answer]) => <div key={name} className="key-row"><span>{name}</span><strong>{checked ? arrowLabel(answer) : "hidden"}</strong></div>)}</div>
+          </aside>
         </main>
       )}
 
@@ -465,7 +535,7 @@ export default function App() {
 
       {tab === "flashcards" && <main className="card flashcard"><div className="muted">Flashcard {index % safeFiltered.length + 1} of {safeFiltered.length}</div><h2>{current.diagnosis}</h2><div className="stem">{current.stem}</div>{revealed && <div className="flash-answer">{current.variables.map(([name, answer]) => <div className="key-row" key={name}><span>{name}</span><strong>{arrowLabel(answer)}</strong></div>)}<div className="example"><strong>Rule:</strong> {current.rule}</div></div>}<div className="actions"><button className="primary" onClick={() => setRevealed((x) => !x)}>{revealed ? "Hide" : "Reveal"}</button><button onClick={() => resetQuestion(index + 1)}>Next</button></div></main>}
 
-      {tab === "dashboard" && <main className="dashboard"><section className="stat-grid"><StatCard label="Attempts" value={stats.attempts || 0} /><StatCard label="Correct" value={stats.correct || 0} /><StatCard label="Accuracy" value={`${accuracy}%`} /><StatCard label="Best streak" value={stats.bestStreak || 0} /></section><section className="card"><div className="card-header"><h2>Module mastery</h2><button onClick={resetStats}>Reset stats</button></div>{moduleStats.map((m) => <div key={m.module} className="mastery"><div><strong>{m.module}</strong><span>{m.pct}% · {m.attempts} attempts · {m.total} cards</span></div><div className="bar"><div style={{ width: `${m.pct}%` }} /></div></div>)}</section></main>}
+      {tab === "dashboard" && <main className="dashboard"><section className="stat-grid"><StatCard label="Attempts" value={stats.attempts || 0} /><StatCard label="Fully correct" value={stats.correct || 0} /><StatCard label="Accuracy" value={`${accuracy}%`} /><StatCard label="Best streak" value={stats.bestStreak || 0} /></section><section className="card"><div className="card-header"><h2>Module mastery</h2><button onClick={resetStats}>Reset stats</button></div>{moduleStats.map((m) => <div key={m.module} className="mastery"><div><strong>{m.module}</strong><span>{m.pct}% · {m.attempts} attempts · {m.total} cards</span></div><div className="bar"><div style={{ width: `${m.pct}%` }} /></div></div>)}</section><section className="card"><h2>Most missed variables</h2><p className="muted">This catches partial misses that full-card accuracy hides.</p>{variableStats.length === 0 && <div className="muted">No variable-level attempts recorded yet.</div>}{variableStats.slice(0, 12).map((item) => <div key={`${item.module}-${item.name}`} className="key-row"><span><strong>{item.name}</strong><br />{item.module}</span><strong>{item.correct}/{item.attempts} correct · {item.wrong} wrong · {item.accuracy}%</strong></div>)}</section></main>}
 
       {tab === "import" && <main className="card"><h2>Import a private question bank</h2><p>This loads cards from a JSON file into your browser local storage. The imported cards are not committed to GitHub and are not uploaded anywhere by the app.</p><div className="import-box"><input type="file" accept="application/json,.json" onChange={importQuestionBank} /><button onClick={clearImportedQuestions}>Clear imported cards</button></div>{importStatus && <div className="example">{importStatus}</div>}<h3>Expected JSON shape</h3><pre>{`{
   "questions": [
