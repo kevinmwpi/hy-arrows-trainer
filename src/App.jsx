@@ -6,7 +6,7 @@ const ARROWS = [
   { key: "same", label: "↔", name: "No change" },
 ];
 
-const QUESTIONS = [
+const STARTER_QUESTIONS = [
   {
     id: 1,
     module: "RAAS / Aldosterone",
@@ -16,7 +16,7 @@ const QUESTIONS = [
     variables: [["Na+", "up"], ["K+", "down"], ["pH", "up"], ["HCO3-", "up"], ["CO2", "up"]],
     rule: "All listed arrows move with aldosterone except potassium, which moves opposite.",
     why: "Aldosterone increases sodium reabsorption and potassium/proton secretion. Proton loss causes metabolic alkalosis, and CO2 rises as respiratory compensation.",
-    trap: "Do not forget potassium is the exception."
+    trap: "Potassium is the exception to the aldosterone direction rule."
   },
   {
     id: 2,
@@ -218,6 +218,38 @@ function normalizeStats(raw) {
   }
 }
 
+function normalizeQuestion(question, index) {
+  return {
+    id: question.id ?? `imported-${index + 1}`,
+    module: question.module || "Imported",
+    difficulty: question.difficulty || "Core",
+    diagnosis: question.diagnosis || `Imported card ${index + 1}`,
+    stem: question.stem || question.question || "",
+    variables: Array.isArray(question.variables) ? question.variables : [],
+    rule: question.rule || "",
+    why: question.why || question.explanation || "",
+    trap: question.trap || "",
+  };
+}
+
+function validateQuestionBank(value) {
+  const list = Array.isArray(value) ? value : value?.questions;
+  if (!Array.isArray(list)) throw new Error("JSON must be an array or an object with a questions array.");
+
+  const normalized = list.map(normalizeQuestion);
+  const invalid = normalized.find((q) => !q.stem || !Array.isArray(q.variables) || q.variables.length === 0);
+  if (invalid) throw new Error("Every question needs a stem and at least one variable.");
+
+  for (const q of normalized) {
+    for (const variable of q.variables) {
+      if (!Array.isArray(variable) || variable.length !== 2) throw new Error("Each variable must look like [\"Name\", \"up|down|same\"].");
+      if (!ARROWS.some((a) => a.key === variable[1])) throw new Error("Arrow values must be up, down, or same.");
+    }
+  }
+
+  return normalized;
+}
+
 function arrowLabel(value) {
   return ARROWS.find((a) => a.key === value)?.label ?? "?";
 }
@@ -243,17 +275,32 @@ export default function App() {
   const [checked, setChecked] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [stats, setStats] = useState(() => normalizeStats(localStorage.getItem("hy-arrows-stats")));
+  const [importedQuestions, setImportedQuestions] = useState(() => {
+    try {
+      const raw = localStorage.getItem("hy-arrows-imported-questions");
+      return raw ? validateQuestionBank(JSON.parse(raw)) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [importStatus, setImportStatus] = useState("");
+
+  const questions = useMemo(() => [...STARTER_QUESTIONS, ...importedQuestions], [importedQuestions]);
 
   useEffect(() => {
     localStorage.setItem("hy-arrows-stats", JSON.stringify(stats));
   }, [stats]);
 
-  const modules = useMemo(() => ["All", ...Array.from(new Set(QUESTIONS.map((q) => q.module)))], []);
+  useEffect(() => {
+    localStorage.setItem("hy-arrows-imported-questions", JSON.stringify(importedQuestions));
+  }, [importedQuestions]);
+
+  const modules = useMemo(() => ["All", ...Array.from(new Set(questions.map((q) => q.module)))], [questions]);
   const difficulties = ["All", "Core", "Medium", "Hard"];
 
   const filtered = useMemo(() => {
     const textQuery = query.trim().toLowerCase();
-    let pool = QUESTIONS.filter((q) => {
+    let pool = questions.filter((q) => {
       const matchesModule = module === "All" || q.module === module;
       const matchesDifficulty = difficulty === "All" || q.difficulty === difficulty;
       const searchText = `${q.module} ${q.diagnosis} ${q.stem} ${q.rule}`.toLowerCase();
@@ -272,10 +319,11 @@ export default function App() {
       pool = pool.filter((q) => !stats.byId[q.id]?.attempts);
     }
 
-    return pool.length ? pool : QUESTIONS;
-  }, [module, difficulty, mode, query, stats.byId]);
+    return pool.length ? questions : pool;
+  }, [module, difficulty, mode, query, stats.byId, questions]);
 
-  const current = filtered[index % filtered.length];
+  const safeFiltered = filtered.length ? filtered : questions;
+  const current = safeFiltered[index % safeFiltered.length];
   const allAnswered = current.variables.every(([name]) => answers[name]);
   const accuracy = stats.attempts ? Math.round((stats.correct / stats.attempts) * 100) : 0;
 
@@ -283,16 +331,16 @@ export default function App() {
     return modules
       .filter((m) => m !== "All")
       .map((m) => {
-        const qs = QUESTIONS.filter((q) => q.module === m);
+        const qs = questions.filter((q) => q.module === m);
         const attempts = qs.reduce((sum, q) => sum + (stats.byId[q.id]?.attempts || 0), 0);
         const correct = qs.reduce((sum, q) => sum + (stats.byId[q.id]?.correct || 0), 0);
-        return { module: m, attempts, correct, pct: attempts ? Math.round((correct / attempts) * 100) : 0 };
+        return { module: m, attempts, correct, pct: attempts ? Math.round((correct / attempts) * 100) : 0, total: qs.length };
       })
       .sort((a, b) => a.pct - b.pct || b.attempts - a.attempts);
-  }, [modules, stats.byId]);
+  }, [modules, stats.byId, questions]);
 
   function resetQuestion(newIndex = index) {
-    setIndex((newIndex + filtered.length) % filtered.length);
+    setIndex((newIndex + safeFiltered.length) % safeFiltered.length);
     setAnswers({});
     setChecked(false);
     setRevealed(false);
@@ -328,23 +376,50 @@ export default function App() {
     resetQuestion(0);
   }
 
+  async function importQuestionBank(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const normalized = validateQuestionBank(parsed);
+      setImportedQuestions(normalized);
+      setImportStatus(`Imported ${normalized.length} private cards from ${file.name}.`);
+      setModule("All");
+      setMode("all");
+      resetQuestion(0);
+    } catch (error) {
+      setImportStatus(`Import failed: ${error.message}`);
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function clearImportedQuestions() {
+    setImportedQuestions([]);
+    localStorage.removeItem("hy-arrows-imported-questions");
+    setImportStatus("Cleared imported private cards.");
+    resetQuestion(0);
+  }
+
   return (
     <div className="page">
       <header className="hero">
         <div>
           <div className="eyebrow">HY Arrows Trainer</div>
           <h1>Learn the arrow logic, not just the answer key.</h1>
-          <p>Practice arrow-style physiology questions by predicting each variable, reviewing the mechanism, and drilling weak areas.</p>
+          <p>Practice arrow-style physiology questions by predicting each variable, reviewing the mechanism, and drilling weak areas. Import private JSON banks locally without committing them to GitHub.</p>
         </div>
         <div className="hero-stats">
-          <StatCard label="Cards" value={QUESTIONS.length} />
+          <StatCard label="Total cards" value={questions.length} />
+          <StatCard label="Imported" value={importedQuestions.length} />
           <StatCard label="Accuracy" value={`${accuracy}%`} />
-          <StatCard label="Streak" value={stats.streak || 0} />
         </div>
       </header>
 
       <nav className="tabs">
-        {["practice", "learn", "flashcards", "dashboard", "builder"].map((item) => (
+        {["practice", "learn", "flashcards", "dashboard", "import", "builder"].map((item) => (
           <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item[0].toUpperCase() + item.slice(1)}</button>
         ))}
       </nav>
@@ -360,7 +435,7 @@ export default function App() {
         <main className="practice-grid">
           <section className="card">
             <div className="card-header">
-              <div><div className="muted">Question {index % filtered.length + 1} of {filtered.length}</div><h2>{current.diagnosis}</h2></div>
+              <div><div className="muted">Question {index % safeFiltered.length + 1} of {safeFiltered.length}</div><h2>{current.diagnosis}</h2></div>
               <div className="badges"><span>{current.module}</span><span>{current.difficulty}</span></div>
             </div>
             <div className="stem">{current.stem}</div>
@@ -388,12 +463,28 @@ export default function App() {
 
       {tab === "learn" && <main className="lesson-grid">{LESSONS.map((lesson, i) => <section className="card" key={lesson.title}><div className="lesson-num">{i + 1}</div><h2>{lesson.title}</h2><p>{lesson.body}</p><div className="example"><strong>Example:</strong> {lesson.example}</div></section>)}</main>}
 
-      {tab === "flashcards" && <main className="card flashcard"><div className="muted">Flashcard {index % filtered.length + 1} of {filtered.length}</div><h2>{current.diagnosis}</h2><div className="stem">{current.stem}</div>{revealed && <div className="flash-answer">{current.variables.map(([name, answer]) => <div className="key-row" key={name}><span>{name}</span><strong>{arrowLabel(answer)}</strong></div>)}<div className="example"><strong>Rule:</strong> {current.rule}</div></div>}<div className="actions"><button className="primary" onClick={() => setRevealed((x) => !x)}>{revealed ? "Hide" : "Reveal"}</button><button onClick={() => resetQuestion(index + 1)}>Next</button></div></main>}
+      {tab === "flashcards" && <main className="card flashcard"><div className="muted">Flashcard {index % safeFiltered.length + 1} of {safeFiltered.length}</div><h2>{current.diagnosis}</h2><div className="stem">{current.stem}</div>{revealed && <div className="flash-answer">{current.variables.map(([name, answer]) => <div className="key-row" key={name}><span>{name}</span><strong>{arrowLabel(answer)}</strong></div>)}<div className="example"><strong>Rule:</strong> {current.rule}</div></div>}<div className="actions"><button className="primary" onClick={() => setRevealed((x) => !x)}>{revealed ? "Hide" : "Reveal"}</button><button onClick={() => resetQuestion(index + 1)}>Next</button></div></main>}
 
-      {tab === "dashboard" && <main className="dashboard"><section className="stat-grid"><StatCard label="Attempts" value={stats.attempts || 0} /><StatCard label="Correct" value={stats.correct || 0} /><StatCard label="Accuracy" value={`${accuracy}%`} /><StatCard label="Best streak" value={stats.bestStreak || 0} /></section><section className="card"><div className="card-header"><h2>Module mastery</h2><button onClick={resetStats}>Reset stats</button></div>{moduleStats.map((m) => <div key={m.module} className="mastery"><div><strong>{m.module}</strong><span>{m.pct}% · {m.attempts} attempts</span></div><div className="bar"><div style={{ width: `${m.pct}%` }} /></div></div>)}</section></main>}
+      {tab === "dashboard" && <main className="dashboard"><section className="stat-grid"><StatCard label="Attempts" value={stats.attempts || 0} /><StatCard label="Correct" value={stats.correct || 0} /><StatCard label="Accuracy" value={`${accuracy}%`} /><StatCard label="Best streak" value={stats.bestStreak || 0} /></section><section className="card"><div className="card-header"><h2>Module mastery</h2><button onClick={resetStats}>Reset stats</button></div>{moduleStats.map((m) => <div key={m.module} className="mastery"><div><strong>{m.module}</strong><span>{m.pct}% · {m.attempts} attempts · {m.total} cards</span></div><div className="bar"><div style={{ width: `${m.pct}%` }} /></div></div>)}</section></main>}
 
-      {tab === "builder" && <main className="card"><h2>Add more cards</h2><p>Convert each remaining arrow question into this compact schema. Keep the explanation paraphrased and preserve the exact arrow logic.</p><pre>{`{
-  id: 17,
+      {tab === "import" && <main className="card"><h2>Import a private question bank</h2><p>This loads cards from a JSON file into your browser local storage. The imported cards are not committed to GitHub and are not uploaded anywhere by the app.</p><div className="import-box"><input type="file" accept="application/json,.json" onChange={importQuestionBank} /><button onClick={clearImportedQuestions}>Clear imported cards</button></div>{importStatus && <div className="example">{importStatus}</div>}<h3>Expected JSON shape</h3><pre>{`{
+  "questions": [
+    {
+      "id": "q017",
+      "module": "Adrenal / Cushing",
+      "difficulty": "Medium",
+      "diagnosis": "Pituitary Cushing disease",
+      "stem": "Paraphrased vignette or direct prompt.",
+      "variables": [["ACTH", "down"], ["Cortisol", "down"]],
+      "rule": "One-sentence rule.",
+      "why": "Mechanism in your own words.",
+      "trap": "Common wrong assumption."
+    }
+  ]
+}`}</pre></main>}
+
+      {tab === "builder" && <main className="card"><h2>Add more cards</h2><p>Convert each remaining arrow question into this compact schema. Keep the explanation paraphrased and preserve the exact arrow logic. For copyrighted study material, keep generated banks private and use the Import tab instead of committing them.</p><pre>{`{
+  id: "q017",
   module: "Module Name",
   difficulty: "Core",
   diagnosis: "Short diagnosis",
