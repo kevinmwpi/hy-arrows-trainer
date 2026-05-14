@@ -4,3 +4,10 @@ dist
 *.local
 .env
 .env.local
+
+# Private question banks generated from copyrighted or licensed study material.
+private/
+*.questions.local.json
+questions.local.json
+src/questions.local.json
+public/questions.local.json
