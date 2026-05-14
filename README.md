@@ -31,6 +31,29 @@ npm run build
 npm run preview
 ```
 
+## Per-variable arrow tracking
+
+Practice mode tracks both full-card accuracy and individual variable accuracy.
+
+Example: if a card has five arrows and you miss only `CO2`, the card is marked as not fully correct, but the app also records that the specific `CO2` variable was missed.
+
+The Practice sidebar shows variable history for the current card:
+
+```text
+CO2: 2/4 correct · 2 wrong
+ACTH: 3/3 correct · 0 wrong
+```
+
+The Dashboard shows the most missed variables across modules so you can identify patterns like:
+
+- CO2 compensation mistakes
+- ACTH feedback mistakes
+- urine osmolality mistakes
+- radioiodine uptake mistakes
+- potassium exceptions
+
+Weak mode now includes both weak cards and weak variables.
+
 ## Private question banks
 
 The public repo contains the platform and a starter set of cards. Do **not** commit a full question bank derived from copyrighted study material into this public repo.
