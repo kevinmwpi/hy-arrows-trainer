@@ -52,7 +52,13 @@ The Dashboard shows the most missed variables across modules so you can identify
 - radioiodine uptake mistakes
 - potassium exceptions
 
-Weak mode now includes both weak cards and weak variables.
+## Weak card graduation
+
+Weak mode behaves like a queue.
+
+- A card enters weak mode after any missed arrow.
+- A weak card graduates to `good for now` after the whole card is answered correctly.
+- When no weak cards remain, the app shows an empty-state message instead of forcing a random fallback question.
 
 ## Private question banks
 
