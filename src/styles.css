@@ -14,7 +14,8 @@ body {
 
 button,
 select,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -76,10 +77,19 @@ button:disabled {
 }
 
 .hero-stats,
-.stat-grid {
+.stat-grid,
+.grade-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 14px;
+}
+
+@media (max-width: 700px) {
+  .hero-stats,
+  .stat-grid,
+  .grade-summary {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stat-card {
@@ -127,7 +137,8 @@ button:disabled {
 .tabs button,
 .actions button,
 .card-header button,
-.import-box button {
+.import-box button,
+.grade-buttons button {
   border: 1px solid #e2e8f0;
   background: white;
   border-radius: 999px;
@@ -224,7 +235,8 @@ h2 {
   gap: 8px;
 }
 
-.badges span {
+.badges span,
+.pill {
   background: #f1f5f9;
   color: #475569;
   border-radius: 999px;
@@ -305,7 +317,8 @@ h2 {
   border-color: #fda4af;
 }
 
-.actions {
+.actions,
+.grade-buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -427,6 +440,85 @@ h2 {
   padding: 10px;
   background: white;
   max-width: 100%;
+}
+
+.mechanism-prompts {
+  display: grid;
+  gap: 14px;
+}
+
+.mechanism-prompt {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  padding: 16px;
+  background: white;
+}
+
+.mechanism-prompt span {
+  font-weight: 800;
+}
+
+.mechanism-prompt small {
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.mechanism-prompt textarea {
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 14px;
+  padding: 12px;
+  color: #0f172a;
+  line-height: 1.5;
+}
+
+.expected {
+  border-left: 4px solid #0f172a;
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 12px;
+  line-height: 1.5;
+}
+
+.table-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.variable-stat-row {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 0.8fr 0.5fr;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.variable-stat-row span {
+  display: block;
+  color: #64748b;
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+@media (max-width: 760px) {
+  .card-header,
+  .mastery > div:first-child,
+  .key-row {
+    flex-direction: column;
+  }
+
+  .variable-stat-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 pre {
