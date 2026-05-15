@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+const WEAK_GRADUATION_CORRECT_STREAK = 2;
+
 const ARROWS = [
   { key: "up", label: "↑", name: "Up" },
   { key: "down", label: "↓", name: "Down" },
@@ -260,6 +262,10 @@ function getVariableKey(question, variableName) {
   return `${question.module}::${variableName}`;
 }
 
+function getGraduationProgress(item) {
+  return Math.min(item?.consecutiveCorrect || 0, WEAK_GRADUATION_CORRECT_STREAK);
+}
+
 function isWeakQuestion(question, item) {
   if (!item) return false;
   if (item.status === "good") return false;
@@ -334,6 +340,8 @@ export default function App() {
   const currentId = current ? getQuestionId(current) : null;
   const allAnswered = current ? current.variables.every(([name]) => answers[name]) : false;
   const accuracy = stats.attempts ? Math.round((stats.correct / stats.attempts) * 100) : 0;
+  const currentCardStats = currentId ? stats.byId[currentId] : null;
+  const graduationProgress = getGraduationProgress(currentCardStats);
 
   const variableStats = Object.values(stats.byVariable || {})
     .map((item) => ({ ...item, accuracy: item.attempts ? Math.round((item.correct / item.attempts) * 100) : 0 }))
@@ -369,7 +377,7 @@ export default function App() {
     const isCorrect = variableResults.every((item) => item.isCorrect);
     setChecked(true);
     setStats((prev) => {
-      const prior = prev.byId[currentId] || { attempts: 0, correct: 0, wrong: 0, variables: {} };
+      const prior = prev.byId[currentId] || { attempts: 0, correct: 0, wrong: 0, variables: {}, consecutiveCorrect: 0 };
       const nextVariablesForCard = { ...(prior.variables || {}) };
       const nextByVariable = { ...(prev.byVariable || {}) };
       for (const result of variableResults) {
@@ -390,6 +398,8 @@ export default function App() {
           lastQuestion: current.diagnosis,
         };
       }
+      const nextConsecutiveCorrect = isCorrect ? (prior.consecutiveCorrect || 0) + 1 : 0;
+      const isGraduated = nextConsecutiveCorrect >= WEAK_GRADUATION_CORRECT_STREAK;
       const streak = isCorrect ? prev.streak + 1 : 0;
       return {
         ...prev,
@@ -406,9 +416,10 @@ export default function App() {
             correct: prior.correct + (isCorrect ? 1 : 0),
             wrong: prior.wrong + (isCorrect ? 0 : 1),
             variables: nextVariablesForCard,
+            consecutiveCorrect: nextConsecutiveCorrect,
             last: isCorrect ? "correct" : "wrong",
-            status: isCorrect ? "good" : "weak",
-            strengthenedAt: isCorrect ? Date.now() : prior.strengthenedAt,
+            status: isGraduated ? "good" : "weak",
+            strengthenedAt: isGraduated ? Date.now() : prior.strengthenedAt,
           },
         },
       };
@@ -477,7 +488,7 @@ export default function App() {
       {tab === "practice" && !current && mode === "weak" && (
         <main className="card">
           <h2>No weak cards right now</h2>
-          <p className="muted">A card enters this queue when you miss any arrow. It graduates to good for now after you answer the whole card correctly.</p>
+          <p className="muted">A card enters this queue when you miss any arrow. It graduates to good for now only after {WEAK_GRADUATION_CORRECT_STREAK} consecutive fully correct attempts after the last miss.</p>
           <div className="actions"><button className="primary" onClick={() => setMode("all")}>Practice all cards</button></div>
         </main>
       )}
@@ -506,7 +517,7 @@ export default function App() {
               ))}
             </div>
             <div className="actions"><button className="primary" disabled={!allAnswered || checked} onClick={checkAnswer}>Check answer</button><button onClick={() => resetQuestion(index + 1)}>Next</button><button onClick={() => resetQuestion(index - 1)}>Previous</button></div>
-            {checked && <div className="explanation"><div><strong>Rule:</strong> {current.rule}</div><div><strong>Mechanism:</strong> {current.why}</div><div><strong>Trap:</strong> {current.trap}</div>{stats.byId[currentId]?.status === "good" && <div><strong>Status:</strong> good for now</div>}</div>}
+            {checked && <div className="explanation"><div><strong>Rule:</strong> {current.rule}</div><div><strong>Mechanism:</strong> {current.why}</div><div><strong>Trap:</strong> {current.trap}</div>{stats.byId[currentId]?.status === "good" ? <div><strong>Status:</strong> good for now</div> : <div><strong>Strengthening:</strong> {graduationProgress}/{WEAK_GRADUATION_CORRECT_STREAK} consecutive fully correct attempts</div>}</div>}
           </section>
           <aside className="side">
             <StatCard label="Attempts" value={stats.attempts || 0} sub={`${stats.correct || 0} fully correct`} />
