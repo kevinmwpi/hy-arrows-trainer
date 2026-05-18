@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 
+const WEAK_GRADUATION_CORRECT_STREAK = 2;
+
 const ARROWS = [
   { key: "up", label: "↑", name: "Up" },
   { key: "down", label: "↓", name: "Down" },
@@ -236,18 +238,15 @@ function normalizeQuestion(question, index) {
 function validateQuestionBank(value) {
   const list = Array.isArray(value) ? value : value?.questions;
   if (!Array.isArray(list)) throw new Error("JSON must be an array or an object with a questions array.");
-
   const normalized = list.map(normalizeQuestion);
   const invalid = normalized.find((q) => !q.stem || !Array.isArray(q.variables) || q.variables.length === 0);
   if (invalid) throw new Error("Every question needs a stem and at least one variable.");
-
   for (const q of normalized) {
     for (const variable of q.variables) {
       if (!Array.isArray(variable) || variable.length !== 2) throw new Error("Each variable must look like [\"Name\", \"up|down|same\"].");
       if (!ARROWS.some((a) => a.key === variable[1])) throw new Error("Arrow values must be up, down, or same.");
     }
   }
-
   return normalized;
 }
 
@@ -261,6 +260,22 @@ function getQuestionId(question) {
 
 function getVariableKey(question, variableName) {
   return `${question.module}::${variableName}`;
+}
+
+function getGraduationProgress(item) {
+  return Math.min(item?.consecutiveCorrect || 0, WEAK_GRADUATION_CORRECT_STREAK);
+}
+
+function isWeakQuestion(question, item) {
+  if (!item) return false;
+  if (item.status === "good") return false;
+  if (item.status === "weak") return true;
+  const cardWeak = item.wrong > 0 && item.wrong >= item.correct;
+  const variableWeak = question.variables.some(([name]) => {
+    const variable = item.variables?.[name];
+    return variable && variable.wrong > 0 && variable.wrong >= variable.correct;
+  });
+  return cardWeak || variableWeak;
 }
 
 function StatCard({ label, value, sub }) {
@@ -316,40 +331,26 @@ export default function App() {
       const matchesQuery = !textQuery || searchText.includes(textQuery);
       return matchesModule && matchesDifficulty && matchesQuery;
     });
-
-    if (mode === "weak") {
-      pool = pool.filter((q) => {
-        const item = stats.byId[getQuestionId(q)];
-        const cardWeak = item && item.wrong > 0 && item.wrong >= item.correct;
-        const variableWeak = q.variables.some(([name]) => {
-          const variable = item?.variables?.[name];
-          return variable && variable.wrong > 0 && variable.wrong >= variable.correct;
-        });
-        return cardWeak || variableWeak;
-      });
-    }
-
-    if (mode === "unseen") {
-      pool = pool.filter((q) => !stats.byId[getQuestionId(q)]?.attempts);
-    }
-
+    if (mode === "weak") return pool.filter((q) => isWeakQuestion(q, stats.byId[getQuestionId(q)]));
+    if (mode === "unseen") pool = pool.filter((q) => !stats.byId[getQuestionId(q)]?.attempts);
     return pool.length ? pool : questions;
   }, [module, difficulty, mode, query, stats.byId, questions]);
 
-  const safeFiltered = filtered.length ? filtered : questions;
-  const current = safeFiltered[index % safeFiltered.length];
-  const currentId = getQuestionId(current);
-  const allAnswered = current.variables.every(([name]) => answers[name]);
+  const current = filtered.length ? filtered[index % filtered.length] : null;
+  const currentId = current ? getQuestionId(current) : null;
+  const allAnswered = current ? current.variables.every(([name]) => answers[name]) : false;
   const accuracy = stats.attempts ? Math.round((stats.correct / stats.attempts) * 100) : 0;
+  const currentCardStats = currentId ? stats.byId[currentId] : null;
+  const graduationProgress = getGraduationProgress(currentCardStats);
 
   const variableStats = Object.values(stats.byVariable || {})
     .map((item) => ({ ...item, accuracy: item.attempts ? Math.round((item.correct / item.attempts) * 100) : 0 }))
     .sort((a, b) => b.wrong - a.wrong || a.accuracy - b.accuracy || b.attempts - a.attempts);
 
-  const currentVariableHistory = current.variables.map(([name]) => {
+  const currentVariableHistory = current ? current.variables.map(([name]) => {
     const item = stats.byId[currentId]?.variables?.[name];
     return { name, attempts: item?.attempts || 0, correct: item?.correct || 0, wrong: item?.wrong || 0 };
-  });
+  }) : [];
 
   const moduleStats = useMemo(() => {
     return modules
@@ -364,29 +365,21 @@ export default function App() {
   }, [modules, stats.byId, questions]);
 
   function resetQuestion(newIndex = index) {
-    setIndex((newIndex + safeFiltered.length) % safeFiltered.length);
+    setIndex(filtered.length ? (newIndex + filtered.length) % filtered.length : 0);
     setAnswers({});
     setChecked(false);
     setRevealed(false);
   }
 
   function checkAnswer() {
-    if (!allAnswered || checked) return;
-
-    const variableResults = current.variables.map(([name, correct]) => ({
-      name,
-      correct,
-      selected: answers[name],
-      isCorrect: answers[name] === correct,
-    }));
+    if (!current || !allAnswered || checked) return;
+    const variableResults = current.variables.map(([name, correct]) => ({ name, correct, selected: answers[name], isCorrect: answers[name] === correct }));
     const isCorrect = variableResults.every((item) => item.isCorrect);
     setChecked(true);
-
     setStats((prev) => {
-      const prior = prev.byId[currentId] || { attempts: 0, correct: 0, wrong: 0, variables: {} };
+      const prior = prev.byId[currentId] || { attempts: 0, correct: 0, wrong: 0, variables: {}, consecutiveCorrect: 0 };
       const nextVariablesForCard = { ...(prior.variables || {}) };
       const nextByVariable = { ...(prev.byVariable || {}) };
-
       for (const result of variableResults) {
         const existingCardVariable = nextVariablesForCard[result.name] || { attempts: 0, correct: 0, wrong: 0 };
         nextVariablesForCard[result.name] = {
@@ -395,15 +388,8 @@ export default function App() {
           wrong: existingCardVariable.wrong + (result.isCorrect ? 0 : 1),
           last: result.isCorrect ? "correct" : "wrong",
         };
-
         const variableKey = getVariableKey(current, result.name);
-        const existingGlobalVariable = nextByVariable[variableKey] || {
-          module: current.module,
-          name: result.name,
-          attempts: 0,
-          correct: 0,
-          wrong: 0,
-        };
+        const existingGlobalVariable = nextByVariable[variableKey] || { module: current.module, name: result.name, attempts: 0, correct: 0, wrong: 0 };
         nextByVariable[variableKey] = {
           ...existingGlobalVariable,
           attempts: existingGlobalVariable.attempts + 1,
@@ -412,7 +398,8 @@ export default function App() {
           lastQuestion: current.diagnosis,
         };
       }
-
+      const nextConsecutiveCorrect = isCorrect ? (prior.consecutiveCorrect || 0) + 1 : 0;
+      const isGraduated = nextConsecutiveCorrect >= WEAK_GRADUATION_CORRECT_STREAK;
       const streak = isCorrect ? prev.streak + 1 : 0;
       return {
         ...prev,
@@ -429,7 +416,10 @@ export default function App() {
             correct: prior.correct + (isCorrect ? 1 : 0),
             wrong: prior.wrong + (isCorrect ? 0 : 1),
             variables: nextVariablesForCard,
+            consecutiveCorrect: nextConsecutiveCorrect,
             last: isCorrect ? "correct" : "wrong",
+            status: isGraduated ? "good" : "weak",
+            strengthenedAt: isGraduated ? Date.now() : prior.strengthenedAt,
           },
         },
       };
@@ -444,7 +434,6 @@ export default function App() {
   async function importQuestionBank(event) {
     const file = event.target.files?.[0];
     if (!file) return;
-
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
@@ -492,15 +481,23 @@ export default function App() {
       <section className="filters">
         <label>Module<select value={module} onChange={(e) => { setModule(e.target.value); resetQuestion(0); }}>{modules.map((m) => <option key={m}>{m}</option>)}</select></label>
         <label>Difficulty<select value={difficulty} onChange={(e) => { setDifficulty(e.target.value); resetQuestion(0); }}>{difficulties.map((d) => <option key={d}>{d}</option>)}</select></label>
-        <label>Mode<select value={mode} onChange={(e) => { setMode(e.target.value); resetQuestion(0); }}><option value="all">All matching</option><option value="weak">Weak cards or variables</option><option value="unseen">Unseen</option></select></label>
+        <label>Mode<select value={mode} onChange={(e) => { setMode(e.target.value); resetQuestion(0); }}><option value="all">All matching</option><option value="weak">Weak cards</option><option value="unseen">Unseen</option></select></label>
         <label>Search<input value={query} onChange={(e) => { setQuery(e.target.value); resetQuestion(0); }} placeholder="ADH, Cushing, uptake..." /></label>
       </section>
 
-      {tab === "practice" && (
+      {tab === "practice" && !current && mode === "weak" && (
+        <main className="card">
+          <h2>No weak cards right now</h2>
+          <p className="muted">A card enters this queue when you miss any arrow. It graduates to good for now only after {WEAK_GRADUATION_CORRECT_STREAK} consecutive fully correct attempts after the last miss.</p>
+          <div className="actions"><button className="primary" onClick={() => setMode("all")}>Practice all cards</button></div>
+        </main>
+      )}
+
+      {tab === "practice" && current && (
         <main className="practice-grid">
           <section className="card">
             <div className="card-header">
-              <div><div className="muted">Question {index % safeFiltered.length + 1} of {safeFiltered.length}</div><h2>{current.diagnosis}</h2></div>
+              <div><div className="muted">Question {index % filtered.length + 1} of {filtered.length}</div><h2>{current.diagnosis}</h2></div>
               <div className="badges"><span>{current.module}</span><span>{current.difficulty}</span></div>
             </div>
             <div className="stem">{current.stem}</div>
@@ -520,7 +517,7 @@ export default function App() {
               ))}
             </div>
             <div className="actions"><button className="primary" disabled={!allAnswered || checked} onClick={checkAnswer}>Check answer</button><button onClick={() => resetQuestion(index + 1)}>Next</button><button onClick={() => resetQuestion(index - 1)}>Previous</button></div>
-            {checked && <div className="explanation"><div><strong>Rule:</strong> {current.rule}</div><div><strong>Mechanism:</strong> {current.why}</div><div><strong>Trap:</strong> {current.trap}</div></div>}
+            {checked && <div className="explanation"><div><strong>Rule:</strong> {current.rule}</div><div><strong>Mechanism:</strong> {current.why}</div><div><strong>Trap:</strong> {current.trap}</div>{stats.byId[currentId]?.status === "good" ? <div><strong>Status:</strong> good for now</div> : <div><strong>Strengthening:</strong> {graduationProgress}/{WEAK_GRADUATION_CORRECT_STREAK} consecutive fully correct attempts</div>}</div>}
           </section>
           <aside className="side">
             <StatCard label="Attempts" value={stats.attempts || 0} sub={`${stats.correct || 0} fully correct`} />
@@ -533,7 +530,7 @@ export default function App() {
 
       {tab === "learn" && <main className="lesson-grid">{LESSONS.map((lesson, i) => <section className="card" key={lesson.title}><div className="lesson-num">{i + 1}</div><h2>{lesson.title}</h2><p>{lesson.body}</p><div className="example"><strong>Example:</strong> {lesson.example}</div></section>)}</main>}
 
-      {tab === "flashcards" && <main className="card flashcard"><div className="muted">Flashcard {index % safeFiltered.length + 1} of {safeFiltered.length}</div><h2>{current.diagnosis}</h2><div className="stem">{current.stem}</div>{revealed && <div className="flash-answer">{current.variables.map(([name, answer]) => <div className="key-row" key={name}><span>{name}</span><strong>{arrowLabel(answer)}</strong></div>)}<div className="example"><strong>Rule:</strong> {current.rule}</div></div>}<div className="actions"><button className="primary" onClick={() => setRevealed((x) => !x)}>{revealed ? "Hide" : "Reveal"}</button><button onClick={() => resetQuestion(index + 1)}>Next</button></div></main>}
+      {tab === "flashcards" && current && <main className="card flashcard"><div className="muted">Flashcard {index % filtered.length + 1} of {filtered.length}</div><h2>{current.diagnosis}</h2><div className="stem">{current.stem}</div>{revealed && <div className="flash-answer">{current.variables.map(([name, answer]) => <div className="key-row" key={name}><span>{name}</span><strong>{arrowLabel(answer)}</strong></div>)}<div className="example"><strong>Rule:</strong> {current.rule}</div></div>}<div className="actions"><button className="primary" onClick={() => setRevealed((x) => !x)}>{revealed ? "Hide" : "Reveal"}</button><button onClick={() => resetQuestion(index + 1)}>Next</button></div></main>}
 
       {tab === "dashboard" && <main className="dashboard"><section className="stat-grid"><StatCard label="Attempts" value={stats.attempts || 0} /><StatCard label="Fully correct" value={stats.correct || 0} /><StatCard label="Accuracy" value={`${accuracy}%`} /><StatCard label="Best streak" value={stats.bestStreak || 0} /></section><section className="card"><div className="card-header"><h2>Module mastery</h2><button onClick={resetStats}>Reset stats</button></div>{moduleStats.map((m) => <div key={m.module} className="mastery"><div><strong>{m.module}</strong><span>{m.pct}% · {m.attempts} attempts · {m.total} cards</span></div><div className="bar"><div style={{ width: `${m.pct}%` }} /></div></div>)}</section><section className="card"><h2>Most missed variables</h2><p className="muted">This catches partial misses that full-card accuracy hides.</p>{variableStats.length === 0 && <div className="muted">No variable-level attempts recorded yet.</div>}{variableStats.slice(0, 12).map((item) => <div key={`${item.module}-${item.name}`} className="key-row"><span><strong>{item.name}</strong><br />{item.module}</span><strong>{item.correct}/{item.attempts} correct · {item.wrong} wrong · {item.accuracy}%</strong></div>)}</section></main>}
 
